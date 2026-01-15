@@ -12,7 +12,7 @@ def offered_campus(series, campus):
     return series.str.contains(campus, case=False).any()
 
 
-# Main Pipeline
+# Main Pipeline Step for Cleaning Enrolment Data
 def main():
 
     # Load enrolment data
@@ -139,5 +139,6 @@ def main():
     print(final_features.isna().sum())
 
 
+# Run the cleaning pipeline step
 if __name__ == "__main__":
     main()
