@@ -327,6 +327,7 @@ def aggregate_to_course_term_level(df):
         'offered_surrey': 'first',
         'offered_van': 'first',
         'course_number_within_level': 'first',
+        'credits': 'first',
     }).reset_index()
     
     # Get level indicators (one-hot encoded)
@@ -345,12 +346,13 @@ def aggregate_to_course_term_level(df):
     cohort_features = course_term_groups.agg({
         'std_bus_courses_completed': 'mean',
         'terms_since_admit': 'mean',
+        'num_bus_credits': 'mean',
         'num_300_taken': 'mean',
         'num_400_taken': 'mean',
     }).reset_index()
     
     cohort_features.columns = ['CatalogNbr', 'CourseTerm', 
-                                'avg_student_bus_completed', 'avg_terms_since_admit',
+                                'avg_student_bus_completed', 'avg_terms_since_admit', 'avg_num_bus_credits',
                                 'avg_300_level_taken', 'avg_400_level_taken']
     
     # Concentration distribution (what % of students have each concentration)
@@ -435,6 +437,7 @@ def main():
     
     # Step 3: Apply feature engineering function (keeps group members' code)
     clean_data_detailed = engineered_features(clean_data)
+    clean_data_detailed.to_csv('data/enrolment_engineered.csv', index=False)
     
     # Step 4: Aggregate to course-term level for demand forecasting
     aggregated_data = aggregate_to_course_term_level(clean_data_detailed)
