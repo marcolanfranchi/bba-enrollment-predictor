@@ -1,6 +1,11 @@
 # Libraries
 import pandas as pd
 
+def fix_course_names(df):
+    # remove random spaces
+    df["CatalogNbr"] = df["CatalogNbr"].str.strip()
+    df["CatalogNbr"] = df["CatalogNbr"].str.rstrip()
+    return df
 
 def add_num_bus_courses(df):
     """
@@ -132,10 +137,26 @@ def course_level(df):
     
     return df
 
+from course.credits import courses
+def num_bus_credits(df):
+    def get_credits(row):
+        # why is there 2XX in the catalognbr?
+        if 'X' in row['CatalogNbr']:
+            return 0
+        return courses[(row['CatalogNbr'],row['CourseTerm'])]
+    df['credits'] = df[['CourseTerm','CatalogNbr']].apply(lambda x: get_credits(x), axis=1)
+    std = df.groupby(["STD_INDEX","CourseTerm"])
+    def sum_credits(row):
+        std = df.loc[row["STD_INDEX"]==df["STD_INDEX"]]
+        return sum(std["credits"][row["CourseTerm"] > df["CourseTerm"]])
+    df['num_bus_credits'] = df[['STD_INDEX','CourseTerm']].apply(
+        lambda x: sum_credits(x), axis=1)
+    return df
 
 def engineered_features(df):
     """Builds new features onto the cleaned enrolment data."""
     
+    df = fix_course_names(df)
     # Example feature: number of completed BUS courses
     df = add_num_bus_courses(df)
     
@@ -150,6 +171,7 @@ def engineered_features(df):
 
     df = add_prev_term_courses(df)
 
+    df = num_bus_credits(df)
 
     
     return df
