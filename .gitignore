@@ -3,6 +3,8 @@ data/
 *.csv
 *.xlsx
 
+plots/
+
 venv/
 
 .DS_Store
