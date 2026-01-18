@@ -3,7 +3,7 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore
 from xgboost import XGBRegressor
 
 # Set style for plots
@@ -288,10 +288,79 @@ def plot_all_predictions(results_df, output_path='plots/all_predictions_comprehe
     print(f"Saved: {output_path} ({n_predictions} predictions)")
     print(f"  → Figure size: 16 x {fig_height:.1f} inches")
 
-# -----------------------------
+def plot_feature_selection_results(results_df, output_path='plots/feature_selection.png'):
+    """Plot feature selection results showing performance vs number of features"""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # MAE vs number of features
+    axes[0, 0].plot(results_df['n_features'], results_df['avg_mae'], marker='o', linewidth=2, markersize=8)
+    axes[0, 0].axhline(y=results_df['avg_mae'].min(), color='r', linestyle='--', alpha=0.5, label='Best MAE')
+    axes[0, 0].set_xlabel('Number of Features', fontsize=11)
+    axes[0, 0].set_ylabel('Average MAE', fontsize=11)
+    axes[0, 0].set_title('MAE vs Number of Features', fontsize=12, fontweight='bold')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # R² vs number of features
+    axes[0, 1].plot(results_df['n_features'], results_df['avg_r2'], marker='o', linewidth=2, markersize=8, color='green')
+    axes[0, 1].axhline(y=results_df['avg_r2'].max(), color='r', linestyle='--', alpha=0.5, label='Best R²')
+    axes[0, 1].set_xlabel('Number of Features', fontsize=11)
+    axes[0, 1].set_ylabel('Average R²', fontsize=11)
+    axes[0, 1].set_title('R² vs Number of Features', fontsize=12, fontweight='bold')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # MAPE vs number of features
+    axes[1, 0].plot(results_df['n_features'], results_df['avg_mape'], marker='o', linewidth=2, markersize=8, color='orange')
+    axes[1, 0].axhline(y=results_df['avg_mape'].min(), color='r', linestyle='--', alpha=0.5, label='Best MAPE')
+    axes[1, 0].set_xlabel('Number of Features', fontsize=11)
+    axes[1, 0].set_ylabel('Average MAPE (%)', fontsize=11)
+    axes[1, 0].set_title('MAPE vs Number of Features', fontsize=12, fontweight='bold')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # RMSE vs number of features
+    axes[1, 1].plot(results_df['n_features'], results_df['avg_rmse'], marker='o', linewidth=2, markersize=8, color='purple')
+    axes[1, 1].axhline(y=results_df['avg_rmse'].min(), color='r', linestyle='--', alpha=0.5, label='Best RMSE')
+    axes[1, 1].set_xlabel('Number of Features', fontsize=11)
+    axes[1, 1].set_ylabel('Average RMSE', fontsize=11)
+    axes[1, 1].set_title('RMSE vs Number of Features', fontsize=12, fontweight='bold')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {output_path}")
+
+def plot_top_features(feature_importance, n=20, output_path='plots/top_features.png'):
+    """Bar plot of top N most important features"""
+    top_n = feature_importance.head(n)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.barh(range(len(top_n)), top_n['importance'], color='steelblue')
+    ax.set_yticks(range(len(top_n)))
+    ax.set_yticklabels(top_n['feature'], fontsize=10)
+    ax.set_xlabel('Feature Importance', fontsize=12)
+    ax.set_title(f'Top {n} Most Important Features', fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    # Invert y-axis to show highest importance at top
+    ax.invert_yaxis()
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {output_path}")
+
 # Train + Evaluate One CV Fold
-# -----------------------------
-def train_and_evaluate(train_df, test_df, term, course_max_dict):
+def train_and_evaluate(train_df, test_df, term, course_max_dict, feature_subset=None):
+    """
+    Train and evaluate model for one CV fold.
+    
+    Args:
+        feature_subset: List of feature names to use. If None, uses all features.
+    """
     y_train_raw = train_df["enrollment_count"].values
     y_train = np.log1p(y_train_raw)
     X_train = train_df.drop(columns=["enrollment_count"])
@@ -304,6 +373,12 @@ def train_and_evaluate(train_df, test_df, term, course_max_dict):
     
     X_train = X_train.drop(columns=["CatalogNbr", "CourseTerm"], errors="ignore")
     X_test  = X_test.drop(columns=["CatalogNbr", "CourseTerm"], errors="ignore")
+    
+    # Apply feature selection if specified
+    if feature_subset is not None:
+        available_features = [f for f in feature_subset if f in X_train.columns]
+        X_train = X_train[available_features]
+        X_test = X_test[available_features]
     
     sample_weight = y_train_raw / np.mean(y_train_raw)
     
@@ -355,20 +430,206 @@ def train_and_evaluate(train_df, test_df, term, course_max_dict):
     results_df["Pct_Error"] = np.abs(results_df["Error"]) / (results_df["Actual"] + 1e-6) * 100
     results_df["CV_Term"] = term
     
-    print("\n" + "="*50)
-    print(f"PREDICTIONS FOR TERM {term}")
-    print("="*50)
-    print(results_df.head(10).to_string(index=False))
-    print(f"\nMetrics - Model: MAE {mae:.2f}, RMSE {rmse:.2f}, R² {r2:.4f}, MAPE {mape:.2f}%")
-    print(f"Baseline: MAE {baseline_mae:.2f}, RMSE {baseline_rmse:.2f}, R² {baseline_r2:.4f}")
+    # Get feature importance if using all features
+    feature_importance = None
+    if feature_subset is None:
+        feature_importance = pd.DataFrame({
+            'feature': X_train.columns,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
     
-    return results_df, mae, rmse, r2, mape, baseline_mae
+    return results_df, mae, rmse, r2, mape, baseline_mae, feature_importance
+
+def get_feature_importance_from_full_model(df):
+    """
+    Train a full model on all data to get feature importance rankings.
+    Uses the most recent term as validation to avoid overfitting.
+    """
+    df = df.sort_values("CourseTerm")
+    unique_terms = sorted(df["CourseTerm"].unique())
+    
+    if len(unique_terms) < 2:
+        return None
+    
+    # Use all but last term for training
+    train_df = df[df["CourseTerm"] < unique_terms[-1]]
+    test_df = df[df["CourseTerm"] == unique_terms[-1]]
+    
+    if len(train_df) < 50 or len(test_df) < 5:
+        return None
+    
+    course_max_dict = df.groupby("CatalogNbr")["enrollment_count"].max().to_dict()
+    _, _, _, _, _, _, feature_importance = train_and_evaluate(
+        train_df, test_df, unique_terms[-1], course_max_dict, feature_subset=None
+    )
+    
+    if feature_importance is not None:
+        print("\nTop 20 Most Important Features:")
+        print("-" * 70)
+        for idx, row in feature_importance.head(20).iterrows():
+            print(f"  {idx+1:2d}. {row['feature']:40s} (importance: {row['importance']:.4f})")
+        print("-" * 70)
+    
+    return feature_importance
+
+def evaluate_feature_subsets(df, feature_importance, n_features_list=[10, 15, 20, 25, 30, 50, 100]):
+    """
+    Evaluate models with different numbers of top features.
+    
+    Args:
+        df: Prepared dataframe
+        feature_importance: DataFrame with feature importance rankings
+        n_features_list: List of feature counts to test
+    """
+    if feature_importance is None or len(feature_importance) == 0:
+        print("Warning: Could not get feature importance. Skipping feature selection.")
+        return None
+    
+    # Get top features
+    top_features = feature_importance['feature'].tolist()
+    max_features = len(top_features)
+    
+    # Adjust n_features_list to not exceed available features
+    n_features_list = [n for n in n_features_list if n <= max_features]
+    n_features_list.append(max_features)  # Always include "all features"
+    n_features_list = sorted(list(set(n_features_list)))
+    
+    print("\n" + "="*70)
+    print("FEATURE SELECTION ANALYSIS")
+    print("="*70)
+    print(f"Testing models with {n_features_list} features")
+    
+    course_max_dict = df.groupby("CatalogNbr")["enrollment_count"].max().to_dict()
+    unique_terms = sorted(df["CourseTerm"].unique())
+    
+    feature_selection_results = []
+    
+    for n_features in n_features_list:
+        if n_features == max_features:
+            feature_subset = None  # Use all features
+            feature_names = "all_features"
+        else:
+            feature_subset = top_features[:n_features]
+            feature_names = f"top_{n_features}"
+        
+        print(f"\nEvaluating with {feature_names}...")
+        
+        all_results = []
+        metrics_list = []
+        
+        for term in unique_terms:
+            test_df = df[df["CourseTerm"] == term]
+            train_df = df[df["CourseTerm"] < term]
+            
+            if len(test_df) < 5 or len(train_df) < 50:
+                continue
+            
+            results_df, mae, rmse, r2, mape, baseline_mae, _ = train_and_evaluate(
+                train_df, test_df, term, course_max_dict, feature_subset=feature_subset
+            )
+            
+            all_results.append(results_df)
+            metrics_list.append({
+                "Term": term, "MAE": mae, "RMSE": rmse, "R2": r2, "MAPE": mape
+            })
+        
+        if len(metrics_list) == 0:
+            continue
+        
+        metrics_df = pd.DataFrame(metrics_list)
+        avg_mae = metrics_df['MAE'].mean()
+        avg_rmse = metrics_df['RMSE'].mean()
+        avg_r2 = metrics_df['R2'].mean()
+        avg_mape = metrics_df['MAPE'].mean()
+        
+        feature_selection_results.append({
+            'n_features': n_features,
+            'feature_set': feature_names,
+            'avg_mae': avg_mae,
+            'avg_rmse': avg_rmse,
+            'avg_r2': avg_r2,
+            'avg_mape': avg_mape
+        })
+        
+        print(f"  Average MAE: {avg_mae:.2f}, R²: {avg_r2:.4f}, MAPE: {avg_mape:.2f}%")
+    
+    # Find best feature count
+    if feature_selection_results:
+        fs_results_df = pd.DataFrame(feature_selection_results)
+        best_idx = fs_results_df['avg_mae'].idxmin()
+        best_config = fs_results_df.loc[best_idx]
+        
+        print("\n" + "-"*70)
+        print("BEST FEATURE CONFIGURATION:")
+        print(f"  Features: {best_config['feature_set']} ({best_config['n_features']} features)")
+        print(f"  MAE: {best_config['avg_mae']:.2f}")
+        print(f"  R²: {best_config['avg_r2']:.4f}")
+        print(f"  MAPE: {best_config['avg_mape']:.2f}%")
+        print("\nFeatures selected for final model:")
+        print("-" * 70)
+        selected_features = top_features[:best_config['n_features']]
+        for idx, feat in enumerate(selected_features, 1):
+            feat_importance = feature_importance[feature_importance['feature'] == feat]['importance'].values[0]
+            print(f"  {idx:2d}. {feat:40s} (importance: {feat_importance:.4f})")
+        print("="*70)
+        
+        # Save results
+        fs_results_df.to_csv("data/feature_selection_results.csv", index=False)
+        feature_importance.to_csv("data/feature_importance.csv", index=False)
+        
+        print("\nSaved feature selection results to: data/feature_selection_results.csv")
+        print("Saved feature importance rankings to: data/feature_importance.csv")
+        
+        # Generate plots
+        plot_feature_selection_results(fs_results_df)
+        plot_top_features(feature_importance, n=20)
+        
+        return best_config['n_features'], top_features[:best_config['n_features']]
+    
+    return None, None
 
 # Main Cross-Term CV Loop
 def main():
     df = pd.read_csv("data/enrolment_counts.csv")
     df = prepare_data(df)
     df = df.sort_values("CourseTerm")
+    
+    # Step 1: Get feature importance from full model
+    print("\n" + "="*70)
+    print("STEP 1: GETTING FEATURE IMPORTANCE")
+    print("="*70)
+    feature_importance = get_feature_importance_from_full_model(df)
+    
+    # Step 2: Evaluate different feature subsets
+    best_n_features, best_features = evaluate_feature_subsets(df, feature_importance)
+    
+    # Step 3: Train final model with best feature set (or all features if selection skipped)
+    print("\n" + "="*70)
+    print("STEP 2: FINAL MODEL TRAINING")
+    print("="*70)
+    if best_features is not None and feature_importance is not None:
+        print(f"Using best feature set: {len(best_features)} features")
+        print("\nFinal model features:")
+        print("-" * 70)
+        for idx, feat in enumerate(best_features, 1):
+            feat_imp_row = feature_importance[feature_importance['feature'] == feat]
+            if len(feat_imp_row) > 0:
+                feat_importance_val = feat_imp_row['importance'].values[0]
+                print(f"  {idx:2d}. {feat:40s} (importance: {feat_importance_val:.4f})")
+            else:
+                print(f"  {idx:2d}. {feat:40s}")
+        print("="*70)
+        feature_subset = best_features
+    else:
+        print("Using all features")
+        if feature_importance is not None:
+            print(f"\nTotal features available: {len(feature_importance)}")
+            print("\nTop 10 features by importance:")
+            print("-" * 70)
+            for idx, row in feature_importance.head(10).iterrows():
+                print(f"  {idx+1:2d}. {row['feature']:40s} (importance: {row['importance']:.4f})")
+            print("="*70)
+        feature_subset = None
     
     course_max_dict = df.groupby("CatalogNbr")["enrollment_count"].max().to_dict()
     
@@ -384,8 +645,8 @@ def main():
             print(f"Skipping term {term} (not enough data)")
             continue
         
-        results_df, mae, rmse, r2, mape, baseline_mae = train_and_evaluate(
-            train_df, test_df, term, course_max_dict
+        results_df, mae, rmse, r2, mape, baseline_mae, _ = train_and_evaluate(
+            train_df, test_df, term, course_max_dict, feature_subset=feature_subset
         )
         
         all_results.append(results_df)
@@ -397,6 +658,57 @@ def main():
     # Combine all results
     all_results_df = pd.concat(all_results, ignore_index=True)
     all_results_df.to_csv("data/demand_predictions_cv.csv", index=False)
+    
+    # Save final feature list if feature selection was used
+    if feature_subset is not None and feature_importance is not None:
+        importance_values = []
+        for f in feature_subset:
+            feat_imp_row = feature_importance[feature_importance['feature'] == f]
+            if len(feat_imp_row) > 0:
+                importance_values.append(feat_imp_row['importance'].values[0])
+            else:
+                importance_values.append(0.0)
+        
+        final_features_df = pd.DataFrame({
+            'feature': feature_subset,
+            'rank': range(1, len(feature_subset) + 1),
+            'importance': importance_values
+        })
+        final_features_df.to_csv("data/final_model_features.csv", index=False)
+        print("\nSaved final model features to: data/final_model_features.csv")
+        print(f"  Total features in final model: {len(feature_subset)}")
+    elif feature_importance is not None:
+        # Save all features if using all features
+        feature_importance.to_csv("data/final_model_features.csv", index=False)
+        print("\nSaved all features to: data/final_model_features.csv")
+        print(f"  Total features in final model: {len(feature_importance)}")
+    
+    # Create final dashboard-ready CSV with predictions
+    # Load original aggregated data to get all features
+    df_original = pd.read_csv("data/enrolment_counts.csv")
+    
+    # Ensure CatalogNbr and CourseTerm have matching types for merge
+    # Convert CatalogNbr to string in both dataframes to match original format
+    all_results_df['CatalogNbr'] = all_results_df['CatalogNbr'].astype(str)
+    df_original['CatalogNbr'] = df_original['CatalogNbr'].astype(str)
+    all_results_df['CourseTerm'] = all_results_df['CourseTerm'].astype(str)
+    df_original['CourseTerm'] = df_original['CourseTerm'].astype(str)
+    
+    # Merge predictions with original data
+    dashboard_df = df_original.merge(
+        all_results_df[['CourseTerm', 'CatalogNbr', 'Predicted', 'Actual', 'Error', 'Abs_Error', 'Pct_Error', 'CV_Term']],
+        on=['CourseTerm', 'CatalogNbr'],
+        how='inner'
+    )
+    
+    # Rename enrollment_count to Actual_Enrollment for clarity, keep Predicted
+    dashboard_df = dashboard_df.rename(columns={'enrollment_count': 'Actual_Enrollment'})
+    
+    # Select key columns for dashboarding (keep all original features + predictions)
+    dashboard_df.to_csv("data/enrollment_predictions_dashboard.csv", index=False)
+    print("\nSaved dashboard-ready CSV: data/enrollment_predictions_dashboard.csv")
+    print(f"  Shape: {dashboard_df.shape}")
+    print(f"  Columns: {len(dashboard_df.columns)}")
     
     metrics_df = pd.DataFrame(metrics)
     metrics_df.to_csv("data/cv_metrics_by_term.csv", index=False)

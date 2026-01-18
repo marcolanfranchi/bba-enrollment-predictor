@@ -1,5 +1,6 @@
 # Libraries
 import pandas as pd
+from course.credits import courses
 
 def fix_course_names(df):
     # remove random spaces
@@ -252,33 +253,23 @@ def course_level(df):
     
     return df
 
-def day_of_week_features(df):
-    """
-    NEW: Adds boolean features for each day of the week the course is offered.
-    Simple feature based on term pattern (Spring=1, Summer=4, Fall=7).
-    """
-    df = df.copy()
-    
-    # Extract term indicator
-    df['enrol_term_indicator'] = df['CourseTerm'] % 10
-    
-    # Drop temp column
-    df = df.drop(columns=['enrol_term_indicator'])
-    
-    return df
-
-from course.credits import courses
 def num_bus_credits(df):
     def get_credits(row):
-        # why is there 2XX in the catalognbr?
-        if 'X' in row['CatalogNbr']:
+        # Handle special course codes (e.g., 2XX) that don't have credit mappings
+        if 'X' in str(row['CatalogNbr']):
             return 0
-        return courses[(row['CatalogNbr'],row['CourseTerm'])]
+        try:
+            return courses[(row['CatalogNbr'], row['CourseTerm'])]
+        except KeyError:
+            return 0
+    
     df['credits'] = df[['CourseTerm','CatalogNbr']].apply(lambda x: get_credits(x), axis=1)
-    std = df.groupby(["STD_INDEX","CourseTerm"])
+    
     def sum_credits(row):
-        std = df.loc[row["STD_INDEX"]==df["STD_INDEX"]]
-        return sum(std["credits"][row["CourseTerm"] > df["CourseTerm"]])
+        # Filter to student's records and sum credits from previous terms
+        student_data = df[df["STD_INDEX"] == row["STD_INDEX"]]
+        return sum(student_data["credits"][student_data["CourseTerm"] < row["CourseTerm"]])
+    
     df['num_bus_credits'] = df[['STD_INDEX','CourseTerm']].apply(
         lambda x: sum_credits(x), axis=1)
     return df
@@ -287,7 +278,6 @@ def engineered_features(df):
     """Builds new features onto the cleaned enrolment data."""
     
     df = fix_course_names(df)
-    # Example feature: number of completed BUS courses
     df = add_num_bus_courses(df)
     df = add_course_level_counts(df)
     df = add_time_since_admission(df)
@@ -301,10 +291,8 @@ def engineered_features(df):
 
 def aggregate_to_course_term_level(df):
     """
-    Aggregates student-level data to course-term level for demand forecasting.
-    
-    Instead of predicting individual enrollments, we predict total enrollment per course per term.
-    This is more useful for course planning and removes the need for negative sampling.
+    Aggregates student-level data to course-term level for demand forecasting. 
+    Only uses information available before the target term.
     """
     print("\nAggregating data to course-term level...")
     
@@ -342,7 +330,9 @@ def aggregate_to_course_term_level(df):
         'enrol_year': 'first',
     }).reset_index()
     
-    # Student cohort features (aggregated across all students in that term)
+    # Student cohort features from previous terms.
+    # These represent the characteristics of students who could take the course
+    # based on prior term data
     cohort_features = course_term_groups.agg({
         'std_bus_courses_completed': 'mean',
         'terms_since_admit': 'mean',
@@ -352,14 +342,15 @@ def aggregate_to_course_term_level(df):
     }).reset_index()
     
     cohort_features.columns = ['CatalogNbr', 'CourseTerm', 
-                                'avg_student_bus_completed', 'avg_terms_since_admit', 'avg_num_bus_credits',
-                                'avg_300_level_taken', 'avg_400_level_taken']
+                                'prev_avg_student_bus_completed', 'prev_avg_terms_since_admit', 
+                                'prev_avg_num_bus_credits', 'prev_avg_300_level_taken', 
+                                'prev_avg_400_level_taken']
     
-    # Concentration distribution (what % of students have each concentration)
+    # Concentration distribution from previous term
     conc_cols = [c for c in df.columns if c.endswith('CON') and not c.endswith('_courses_completed')]
     if conc_cols:
         conc_features = course_term_groups[conc_cols].mean().reset_index()
-        conc_features.columns = ['CatalogNbr', 'CourseTerm'] + [f'pct_{c}' for c in conc_cols]
+        conc_features.columns = ['CatalogNbr', 'CourseTerm'] + [f'prev_pct_{c}' for c in conc_cols]
     else:
         conc_features = enrollment_counts[['CatalogNbr', 'CourseTerm']].copy()
     
@@ -424,18 +415,292 @@ def add_historical_demand_features(df):
     
     return df
 
+def add_term_growth_features(df):
+    """
+    Adds term-level enrollment growth features to capture program expansion/contraction.
+    """
+    print("\nAdding term-level enrollment growth features...")
+    
+    df = df.copy()
+    df = df.sort_values(['CourseTerm'])
+    
+    # Calculate total program enrollment per term (lagged to previous term)
+    term_totals = df.groupby('CourseTerm')['enrollment_count'].sum().reset_index()
+    term_totals.columns = ['CourseTerm', 'term_total_enrollment']
+    
+    # Shift to get PREVIOUS term's total enrollment
+    term_totals['prev_term_total_enrollment'] = term_totals['term_total_enrollment'].shift(1)
+    
+    # Calculate growth metrics
+    term_totals['term_enrollment_growth'] = (
+        term_totals['term_total_enrollment'] - term_totals['prev_term_total_enrollment']
+    )
+    
+    term_totals['term_enrollment_growth_pct'] = (
+        term_totals['term_enrollment_growth'] / term_totals['prev_term_total_enrollment']
+    ).fillna(0) * 100
+    
+    # Rolling average of term enrollments (3-term window)
+    term_totals['term_enrollment_rolling_avg_3'] = (
+        term_totals['term_total_enrollment'].shift(1).rolling(window=3, min_periods=1).mean()
+    )
+    
+    # YoY growth (comparing to same term last year)
+    term_totals['yoy_enrollment_growth'] = (
+        term_totals['term_total_enrollment'] - term_totals['term_total_enrollment'].shift(3)
+    )
+    
+    # Count of unique courses offered per term (diversity of offerings)
+    courses_per_term = df.groupby('CourseTerm')['CatalogNbr'].nunique().reset_index()
+    courses_per_term.columns = ['CourseTerm', 'num_courses_offered']
+    courses_per_term['prev_num_courses_offered'] = courses_per_term['num_courses_offered'].shift(1)
+    
+    # Merge term-level features back to main dataframe
+    # Drop current term's total (would be leakage), keep only lagged features
+    term_features = term_totals.drop(columns=['term_total_enrollment'])
+    term_features = term_features.merge(
+        courses_per_term[['CourseTerm', 'prev_num_courses_offered']], 
+        on='CourseTerm', 
+        how='left'
+    )
+    
+    df = df.merge(term_features, on='CourseTerm', how='left')
+    
+    # Fill NaNs (first terms have no historical data)
+    growth_cols = [
+        'prev_term_total_enrollment', 'term_enrollment_growth', 'term_enrollment_growth_pct',
+        'term_enrollment_rolling_avg_3', 'yoy_enrollment_growth', 'prev_num_courses_offered'
+    ]
+    
+    df[growth_cols] = df[growth_cols].fillna(0)
+    
+    print(f"Added {len(growth_cols)} term-level growth features")
+    
+    return df
+
+def add_course_prerequisite_features(df):
+    """
+    Adds features based on prerequisite structure and course difficulty.
+    """
+    print("\nAdding course prerequisite and difficulty features...")
+    
+    df = df.copy()
+    df = df.sort_values(['CatalogNbr', 'CourseTerm'])
+    
+    # Extract numeric course number
+    df['temp_catalog'] = df['CatalogNbr'].astype(str).str.replace('W', '', regex=False)
+    df['temp_catalog'] = pd.to_numeric(df['temp_catalog'], errors='coerce').fillna(0).astype(int)
+    
+    # Course number within level (e.g., 360 -> 60)
+    # Lower numbers often = earlier in sequence
+    df['course_sequence_position'] = df['temp_catalog'] % 100
+    
+    # Track enrollment in prerequisite-heavy course levels
+    # 300-level courses often require 200-level prereqs
+    for level in [200, 300, 400]:
+        level_enrollments = df[df['temp_catalog'] >= level].groupby('CourseTerm').size().reset_index()
+        level_enrollments.columns = ['CourseTerm', f'prev_level_{level}_plus_enrollment']
+        level_enrollments[f'prev_level_{level}_plus_enrollment'] = (
+            level_enrollments[f'prev_level_{level}_plus_enrollment'].shift(1)
+        )
+        df = df.merge(level_enrollments, on='CourseTerm', how='left')
+        df[f'prev_level_{level}_plus_enrollment'] = df[f'prev_level_{level}_plus_enrollment'].fillna(0)
+    
+    # Concentration-specific demand (lagged)
+    # If FINCON had high enrollment last term, FIN courses likely see more demand
+    df['temp_conc'] = None
+    conc_map = {
+        range(313, 320): 'FINCON',
+        range(320, 330): 'ACCTCON',
+        range(343, 350): 'MKTGCON',
+        range(360, 370): 'MISCON',
+        range(381, 390): 'HRMCON',
+    }
+    
+    for course_range, conc in conc_map.items():
+        mask = df['temp_catalog'].isin(course_range)
+        df.loc[mask, 'temp_conc'] = conc
+    
+    # For each concentration, track lagged enrollment
+    if 'temp_conc' in df.columns:
+        conc_enrollment = df.groupby(['temp_conc', 'CourseTerm']).size().reset_index()
+        conc_enrollment.columns = ['temp_conc', 'CourseTerm', 'conc_enrollment']
+        conc_enrollment['prev_conc_enrollment'] = (
+            conc_enrollment.groupby('temp_conc')['conc_enrollment'].shift(1)
+        )
+        df = df.merge(
+            conc_enrollment[['temp_conc', 'CourseTerm', 'prev_conc_enrollment']], 
+            on=['temp_conc', 'CourseTerm'], 
+            how='left'
+        )
+        df['prev_conc_enrollment'] = df['prev_conc_enrollment'].fillna(0)
+        df = df.drop(columns=['temp_conc'])
+    
+    df = df.drop(columns=['temp_catalog'])
+    
+    print("Added course prerequisite and difficulty features")
+    
+    return df
+
+def add_enrollment_volatility_features(df):
+    """
+    Adds features capturing enrollment volatility and stability.
+    High volatility = harder to predict, may need capacity buffer
+    Low volatility = stable demand, easier planning
+    """
+    print("\nAdding enrollment volatility features...")
+    
+    df = df.copy()
+    df = df.sort_values(['CatalogNbr', 'CourseTerm'])
+    
+    # Calculate rolling standard deviation (volatility)
+    df['enrollment_rolling_std_3'] = (
+        df.groupby('CatalogNbr')['enrollment_count']
+          .transform(lambda x: x.shift(1).rolling(window=3, min_periods=2).std())
+    )
+    
+    # Coefficient of variation (normalized volatility)
+    df['enrollment_cv_3'] = (
+        df['enrollment_rolling_std_3'] / 
+        (df['enrollment_rolling_avg_3'] + 1)  # +1 to avoid division by zero
+    )
+    
+    # Calculate enrollment momentum (is it accelerating or decelerating?)
+    df['enrollment_momentum'] = (
+        df['enrollment_trend_1'] - df['enrollment_trend_2']
+    )
+    
+    # Seasonal stability: does this course have consistent enrollment in its term?
+    df['enrollment_same_term_std'] = (
+        df.groupby(['CatalogNbr', 'enrol_term'])['enrollment_count']
+          .transform(lambda x: x.shift(1).expanding().std())
+    )
+    
+    # Fill NaNs
+    volatility_cols = [
+        'enrollment_rolling_std_3', 'enrollment_cv_3', 
+        'enrollment_momentum', 'enrollment_same_term_std'
+    ]
+    df[volatility_cols] = df[volatility_cols].fillna(0)
+    
+    print(f"Added {len(volatility_cols)} enrollment volatility features")
+    
+    return df
+
+def add_course_popularity_features(df):
+    """
+    Adds features measuring course popularity and market share.
+    
+    Captures relative demand compared to other courses at same level.
+    """
+    print("\nAdding course popularity features...")
+    
+    df = df.copy()
+    df = df.sort_values(['CatalogNbr', 'CourseTerm'])
+    
+    # Extract course level
+    df['temp_catalog'] = df['CatalogNbr'].astype(str).str.replace('W', '', regex=False)
+    df['temp_catalog'] = pd.to_numeric(df['temp_catalog'], errors='coerce').fillna(0).astype(int)
+    df['temp_level'] = df['temp_catalog'] // 100 * 100
+    
+    # Calculate market share within course level (lagged)
+    level_totals = df.groupby(['temp_level', 'CourseTerm'])['enrollment_count'].sum().reset_index()
+    level_totals.columns = ['temp_level', 'CourseTerm', 'level_total_enrollment']
+    
+    df = df.merge(level_totals, on=['temp_level', 'CourseTerm'], how='left')
+    
+    # Shift level totals to previous term
+    df['prev_level_total_enrollment'] = (
+        df.groupby('temp_level')['level_total_enrollment'].shift(1)
+    )
+    
+    # Market share (what % of level enrollment does this course capture?)
+    df['prev_course_market_share'] = (
+        df['enrollment_lag_1'] / (df['prev_level_total_enrollment'] + 1) * 100
+    )
+    
+    # Rank within level (is this a top-3 course in its level?)
+    df['prev_enrollment_rank_in_level'] = (
+        df.groupby(['temp_level', 'CourseTerm'])['enrollment_lag_1']
+          .rank(method='dense', ascending=False)
+    )
+    
+    # Is this course growing faster than its level average?
+    df['prev_level_avg_enrollment'] = (
+        df.groupby('temp_level')['prev_level_total_enrollment']
+          .transform('mean')
+    )
+    
+    df['prev_course_vs_level_growth'] = (
+        df['enrollment_trend_1'] - 
+        (df['prev_level_total_enrollment'] - df.groupby('temp_level')['prev_level_total_enrollment'].shift(1))
+    )
+    
+    # Clean up temp columns
+    df = df.drop(columns=['temp_catalog', 'temp_level', 'level_total_enrollment'])
+    
+    # Fill NaNs
+    popularity_cols = [
+        'prev_level_total_enrollment', 'prev_course_market_share', 
+        'prev_enrollment_rank_in_level', 'prev_level_avg_enrollment', 
+        'prev_course_vs_level_growth'
+    ]
+    df[popularity_cols] = df[popularity_cols].fillna(0)
+    
+    print(f"Added {len(popularity_cols)} course popularity features")
+    
+    return df
+
+def add_capacity_constraint_features(df):
+    """
+    Adds features related to course capacity and section offerings.
+    
+    If a course was "full" last term, it may have unmet demand.
+    """
+    print("\nAdding capacity constraint features...")
+    
+    df = df.copy()
+    df = df.sort_values(['CatalogNbr', 'CourseTerm'])
+    
+    # Identify courses with unusual enrollment spikes
+    df['had_enrollment_spike'] = (
+        (df['enrollment_trend_1'] > df['enrollment_rolling_std_3'] * 2) & 
+        (df['enrollment_rolling_std_3'] > 0)
+    ).astype(int)
+    
+    # Identify courses with unusual drops
+    df['had_enrollment_drop'] = (
+        (df['enrollment_trend_1'] < -df['enrollment_rolling_std_3'] * 2) & 
+        (df['enrollment_rolling_std_3'] > 0)
+    ).astype(int)
+    
+    # Course offering frequency
+    # How many times has this course been offered in the last 6 terms?
+    df['course_offering_frequency'] = (
+        df.groupby('CatalogNbr')['enrollment_count']
+          .transform(lambda x: x.shift(1).rolling(window=6, min_periods=1).count())
+    )
+    
+    # Average gap between offerings (if course isn't offered every term)
+    # This is complex to calculate exactly, so we'll use a proxy
+    df['is_every_term_course'] = (df['course_offering_frequency'] >= 5).astype(int)
+    
+    print("Added capacity constraint features")
+    
+    return df
+
 # Main Pipeline Step for Preprocessing the Cleaned Enrolment Data
 def main():
     
     # Step 1: Load cleaned enrolment data
     clean_data = pd.read_csv('data/enrolment_clean.csv')
     
-    # Step 2: Join student info from delcared csv
+    # Step 2: Join student info from declared csv
     student_declared = pd.read_csv('data/STUDENT_Declared20260105.csv')
     clean_data = clean_data.merge(student_declared, on='STD_INDEX', how='left')
     clean_data = clean_data.drop(columns=['Program'])
     
-    # Step 3: Apply feature engineering function (keeps group members' code)
+    # Step 3: Apply feature engineering function
     clean_data_detailed = engineered_features(clean_data)
     clean_data_detailed.to_csv('data/enrolment_engineered.csv', index=False)
     
@@ -445,7 +710,22 @@ def main():
     # Step 5: Add historical demand features
     aggregated_data = add_historical_demand_features(aggregated_data)
     
-    # Step 6: Save the preprocessed data
+    # Step 6: Add term-level enrollment growth features
+    aggregated_data = add_term_growth_features(aggregated_data)
+    
+    # Step 7: Add course prerequisite features
+    aggregated_data = add_course_prerequisite_features(aggregated_data)
+    
+    # Step 8: Add enrollment volatility features
+    aggregated_data = add_enrollment_volatility_features(aggregated_data)
+    
+    # Step 9: Add course popularity features
+    aggregated_data = add_course_popularity_features(aggregated_data)
+    
+    # Step 10: Add capacity constraint features
+    aggregated_data = add_capacity_constraint_features(aggregated_data)
+    
+    # Step 11: Save the preprocessed data
     aggregated_data.to_csv('data/enrolment_counts.csv', index=False)
     print("\nSaved course demand dataset to: data/enrolment_counts.csv")
     print(f"Shape: {aggregated_data.shape}")
