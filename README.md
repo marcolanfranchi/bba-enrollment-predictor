@@ -88,7 +88,78 @@ This cleaned dataset is used as the input for the next steps in the modeling pip
 
 ### 2. Feature Engineering
 
+The second step performs feature engineering and aggregates the data to course-term level for demand forecasting.
 
+From the project root directory, run:
+
+```bash
+python3 model/2-preprocess.py
+```
+
+This script:
+- Joins student information from the declared student dataset
+- Engineers student-level features (course progression, concentration progress, credits completed, etc.)
+- Aggregates student-level data to course-term level for demand forecasting
+- Adds historical demand features (lags, rolling averages, trends, seasonality)
+- Adds term-level growth features (program expansion/contraction metrics)
+- Adds course prerequisite and difficulty features
+- Adds enrollment volatility and stability features
+- Adds course popularity and market share features
+- Adds capacity constraint features
+- Outputs a preprocessed dataset ready for model training
+
+After running the script, the processed file will be saved to: `data/enrolment_counts.csv`
+
+This preprocessed dataset contains all engineered features and is used as input for model training.
 
 ### 3. Model Training
 
+The final step trains the enrollment prediction model using cross-validation and performs feature selection.
+
+From the project root directory, run:
+
+```bash
+python3 model/3-train.py
+```
+
+This script:
+- Loads the preprocessed course-term level data
+- Filters to 300-499 level courses (upper-division BBA courses)
+- Performs feature importance analysis to identify the most impactful features
+- Evaluates models with different feature subsets (10, 15, 20, 25, 30, 50, 100, all features)
+- Selects the optimal feature set based on cross-validated performance
+- Trains the final model using leave-one-term-out cross-validation
+- Generates evaluation plots and metrics
+- Saves predictions and model outputs**Outputs:** to the `data/` directory
+- `plots/` - Directory containing evaluation visualizations
+<!-- - `data/demand_predictions_cv.csv` - Cross-validation predictions for all terms
+- `data/cv_metrics_by_term.csv` - Performance metrics (MAE, RMSE, R², MAPE) for each term
+- `data/enrollment_predictions_dashboard.csv` - Dashboard-ready CSV with predictions and all features
+- `data/feature_selection_results.csv` - Performance comparison across different feature counts
+- `data/feature_importance.csv` - Feature importance rankings
+- `data/final_model_features.csv` - List of features used in the final model -->
+  <!-- - `actual_vs_predicted.png` - Scatter plot of predictions vs actuals
+  - `residuals.png` - Residual analysis plot
+  - `error_distribution.png` - Distribution of prediction errors
+  - `metrics_over_time.png` - Model performance across terms
+  - `top_errors.png` - Courses with highest prediction errors
+  - `best_predictions.png` - Courses with best predictions
+  - `all_predictions_comprehensive.png` - All predictions organized by term
+  - `feature_selection.png` - Performance vs number of features
+  - `top_features.png` - Top 20 most important features -->
+
+**Model Performance:**
+The model uses XGBoost regression and typically achieves:
+- R² score: ~60%
+- Mean Absolute Error (MAE): ~20 students per course
+- Mean Absolute Percentage Error (MAPE): ~15-20%
+
+These metrics are reasonable given the limited historical data (~7 terms) and real-world enrollment variability.
+
+## Notes
+
+- The pipeline processes data sequentially: cleaning → feature engineering → model training
+- Each step depends on outputs from the previous step
+- Feature selection automatically identifies the optimal number of features (typically 15-25 features)
+- The final model focuses on upper-division BBA courses (300-499 level)
+- All predictions use only information available before the target term (no data leakage)
