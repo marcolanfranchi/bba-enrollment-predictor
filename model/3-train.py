@@ -659,6 +659,38 @@ def main():
     all_results_df = pd.concat(all_results, ignore_index=True)
     all_results_df.to_csv("data/demand_predictions_cv.csv", index=False)
     
+    for term in unique_terms:
+        test_df = df[df["CourseTerm"] == term]
+        train_df = df[df["CourseTerm"] < term]
+        
+        if len(test_df) < 5 or len(train_df) < 50:
+            print(f"Skipping term {term} (not enough data)")
+            continue
+        
+        results_df, mae, rmse, r2, mape, baseline_mae, _ = train_and_evaluate(
+            train_df, test_df, term, course_max_dict, feature_subset=feature_subset
+        )
+        
+        all_results.append(results_df)
+        metrics.append({
+            "Term": term, "MAE": mae, "RMSE": rmse, "R2": r2, "MAPE": mape,
+            "Baseline_MAE": baseline_mae
+        })
+        
+        # Print predictions for this term
+        print("\n" + "="*70)
+        print(f"TERM {term} PREDICTIONS")
+        print("="*70)
+        print(results_df[['CatalogNbr', 'Actual', 'Predicted', 'Error', 'Abs_Error', 'Pct_Error']].to_string(index=False))
+        print("\n" + "-"*70)
+        print(f"Term {term} Metrics:")
+        print(f"  MAE:           {mae:.2f}")
+        print(f"  RMSE:          {rmse:.2f}")
+        print(f"  R²:            {r2:.4f}")
+        print(f"  MAPE:          {mape:.2f}%")
+        print(f"  Baseline MAE:  {baseline_mae:.2f}")
+        print("="*70)
+    
     # Save final feature list if feature selection was used
     if feature_subset is not None and feature_importance is not None:
         importance_values = []
